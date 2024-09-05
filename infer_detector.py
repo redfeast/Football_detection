@@ -6,6 +6,9 @@ from utils.utils import *
 import xmltodict
 import matplotlib.pyplot as plt
 from calculate_map import *
+import shutil
+# import imageio
+# import numpy as np
 
 class Infer():
     '''
@@ -226,7 +229,7 @@ class Infer():
             self.system_dict["local"]["model"].half()
         
 
-
+## predict function returns image with bbox
 
     def Predict(self, img_path, conf_thres=0.3, iou_thres=0.5):
         '''
@@ -242,25 +245,30 @@ class Infer():
         '''
         self.system_dict["params"]["conf_thres"] = conf_thres;
         self.system_dict["params"]["iou_thres"] = iou_thres;
-        view_img = self.system_dict["params"]["view_img"];
-        save_txt = self.system_dict["params"]["save_txt"];
-        save_img = self.system_dict["params"]["save_img"];
+        # view_img = self.system_dict["params"]["view_img"];
+        # save_txt = self.system_dict["params"]["save_txt"];
+        # save_img = self.system_dict["params"]["save_img"];
+        view_img=False
+        save_txt=False
+        save_img=False
         out = self.system_dict["params"]["output"];
         source = "tmp";
+        add_bbox=True
 
-        if(not os.path.isdir(source)):
+        if (not os.path.isdir(source)):
             os.mkdir(source);
         else:
-            os.system("rm -r " + source);
+            shutil.rmtree(source);
             os.mkdir(source);
 
-        if(not os.path.isdir(out)):
+        if (not os.path.isdir(out)):
             os.mkdir(out);
         else:
-            os.system("rm -r " + out);
+            shutil.rmtree(out);
             os.mkdir(out);
 
-        os.system("cp " + img_path + " " + source + "/");
+        # os.system("cp " + img_path + " " + source + "/");
+        shutil.copy(img_path,source+"/")
 
         self.system_dict["local"]["dataset"] = LoadImages(source, 
                                                             img_size=self.system_dict["params"]["img_size"], 
@@ -295,7 +303,7 @@ class Infer():
 
             # Apply Classifier
             if self.system_dict["params"]["classify"]:
-                pred = apply_classifier(pred, modelc, img, im0s)
+                pred = apply_classifier(pred, model, img, im0s)
 
             # Process detections
             for i, det in enumerate(pred):  # detections per image
@@ -319,6 +327,10 @@ class Infer():
                                 file.write(('%g ' * 6 + '\n') % (*xyxy, cls, conf))
 
                         if save_img or view_img:  # Add bbox to image
+                            label = '%s %.2f' % (names[int(cls)], conf)
+                            plot_one_box(xyxy, im0, label=label, color=colors[int(cls)])
+                        
+                        if add_bbox:
                             label = '%s %.2f' % (names[int(cls)], conf)
                             plot_one_box(xyxy, im0, label=label, color=colors[int(cls)])
 
@@ -345,6 +357,121 @@ class Infer():
 
         print('Done. (%.3fs)' % (time.time() - t0))
 
+        return im0
+    
+    ## define predict function to detect by passing array instead of path, useful for video streaming
+    def detect_ndarray(self,img,conf_thres=0.3,iou_thres=0.4):
+            self.system_dict["params"]["conf_thres"] = conf_thres;
+            self.system_dict["params"]["iou_thres"] = iou_thres;
+            img_size=self.system_dict["params"]["img_size"]
+            half=False#convert fp32 to fp16
+
+            # Get names and colors
+            names = self.system_dict["params"]["names"]
+            colors = [[random.randint(0, 255) for _ in range(3)] for _ in range(len(names))]            
+            # Convert
+            img0=img
+            print("img0 shape:",img0.shape)
+            # Padded resize
+            img = letterbox(img0, new_shape=img_size)[0]
+
+            # Convert
+            img = img[:, :, ::-1].transpose(2, 0, 1)  # BGR to RGB, to 3x416x416
+            img = np.ascontiguousarray(img, dtype=np.float16 if half else np.float32)  # uint8 to fp16/fp32
+            img /= 255.0  # 0 - 255 to 0.0 - 1.0
+
+          
+            # img = cv2.dnn.blobFromImage(img, 1 / 255, (416, 416),
+                                #  (0, 0, 0), swapRB=True, crop=False)
+            print("img shape:",img.shape)
+            img = torch.from_numpy(img).to(self.system_dict["local"]["device"])
+            if img.ndimension() == 3:
+                img = img.unsqueeze(0)
+            # Get detections    
+            pred = self.system_dict["local"]["model"](img)[0]
+            
+
+            if self.system_dict["params"]["half"]:
+                pred = pred.float()
+
+            # Apply NMS
+            pred = non_max_suppression(pred, self.system_dict["params"]["conf_thres"], 
+                                       self.system_dict["params"]["iou_thres"], 
+                                       classes=self.system_dict["params"]["classes"], 
+                                       agnostic=self.system_dict["params"]["agnostic_nms"])
+            
+
+            # Apply Classifier
+            if self.system_dict["params"]["classify"]:
+                pred = apply_classifier(pred, model, img, img0)
+
+            # Process detections
+            for i, det in enumerate(pred):  # detections per image
+                # p, s, im0 = path, '', im0s
+
+                # save_path = str(Path(out) / Path(p).name)
+                s=''
+                s += '%gx%g ' % img.shape[2:]  # print string
+                if det is not None and len(det):
+                    # Rescale boxes from img_size to im0 size
+                    det[:, :4] = scale_coords(img.shape[2:], det[:, :4], img0.shape).round()
+
+                    # Print results
+                    for c in det[:, -1].detach().unique():
+                        n = (det[:, -1] == c).sum()  # detections per class
+                        s += '%g %ss, ' % (n, names[int(c)])  # add to string
+
+                    # Write results
+                    for *xyxy, conf, cls in det:
+
+                        label = '%s %.2f' % (names[int(cls)], conf)
+                       
+                        plot_one_box(xyxy, img0, label=label, color=colors[int(cls)])
+
+            return img0  
+
+## Define the video detection function using detect_ndarray
+
+##TO-DO ==> finish the saving predictions to gif or mp4
+
+    def video_detection(self,video: str,out_name):
+            
+
+
+        
+
+        torch.cuda.empty_cache()
+        # Capturing a picture from a video
+        video_camera_capture = cv2.VideoCapture(video)
+        # outs=[]
+        while video_camera_capture.isOpened():
+            ret, frame = video_camera_capture.read()
+            if not ret:
+                break
+            
+            # Application of object recognition methods on a video frame from YOLO
+            
+            frame = self.detect_ndarray(frame,conf_thres=0.3, iou_thres=0.4)
+            ##Transform from BGR to RGB before appending since we need to use imageio
+            # out=np.asarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB),dtype='uint8')
+            # print("out shape:",out.shape)
+            # outs.append(out)
+            
+            # Displaying the processed image on the screen with a reduced window size
+            frame = cv2.resize(frame, (1920 // 2 , 1080 // 2 ))
+            cv2.imshow("Video Capture", frame)
+            cv2.waitKey(1)
+            
+        
+        video_camera_capture.release()
+        cv2.destroyAllWindows()
+        # imageio.mimsave(outs,out_name)
+        
+
+
+
+
+## prediction on Image returns Boundingbxes and scores
 
 
     def Predict_On_Image(self, img_path, conf_thresh=0.3, iou_thresh=0.5, output_img_path="output.png", verbose=True):
@@ -371,16 +498,19 @@ class Infer():
         if(not os.path.isdir(source)):
             os.mkdir(source);
         else:
-            os.system("rm -r " + source);
+            # os.system("rm -r " + source);
+            shutil.rmtree(source)
             os.mkdir(source);
 
         if(not os.path.isdir(out)):
             os.mkdir(out);
         else:
-            os.system("rm -r " + out);
+            # os.system("rm -r " + out);
+            shutil.rmtree(out)
             os.mkdir(out);
 
-        os.system("cp " + img_path + " " + source + "/");
+        # os.system(img_path,source + "/");
+        shutil.copy(img_path,source + "/");
 
         self.system_dict["local"]["dataset"] = LoadImages(source, 
                                                             img_size=self.system_dict["params"]["img_size"], 
@@ -514,7 +644,8 @@ class Infer():
         output = self.Predict_On_Folder(image_folder, conf_thresh=conf_thresh, iou_thresh=iou_thresh, output_folder_path=output_folder_path, verbose=False);
 
         if(os.path.isdir("tmp")):
-            os.system("rm -r tmp");
+            # os.system("rm -r tmp");
+            shutil.rmtree("tmp")
 
         os.mkdir("tmp");
         os.mkdir("tmp/gt");
@@ -1202,6 +1333,7 @@ class Infer():
                 )
 
         if(os.path.isdir("tmp")):
-            os.system("rm -r tmp");
+            # os.system("rm -r tmp");
+            shutil.rmtree("tmp")
 
         return mAP, ap_dictionary, lamr_dictionary;
