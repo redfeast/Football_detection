@@ -2,7 +2,7 @@ from infer_detector import Infer
 inf=Infer()
 #Initialise and Load the mode
 
-model_name='yolov3'
+model_name='yolov3-football'
 f=open('classes.txt')
 class_list=f.readlines()
 f.close()
